@@ -287,7 +287,7 @@ impl Command {
         jump_backward, "Jump backward on jumplist",
         rotate_view, "Goto next window",
         hsplit, "Horizontal bottom split",
-        vsplit, "Vertical right split",
+        split, "Vertical right split",
         wclose, "Close window",
         select_register, "Select register",
         align_view_middle, "Align view middle",
@@ -2175,7 +2175,7 @@ mod cmd {
         },
         TypableCommand {
             name: "vsplit",
-            alias: Some("vsp"),
+            alias: Some("vs"),
             doc: "Open the file in a vertical split.",
             fun: vsplit,
             completer: Some(completers::filename),
