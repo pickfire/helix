@@ -117,6 +117,12 @@ impl<'a> Context<'a> {
     pub fn count(&self) -> usize {
         self.count.map_or(1, |v| v.get())
     }
+
+    /// Record and run the motion.
+    pub fn run_motion(&mut self, motion_fn: impl Fn(&mut Editor) + 'static) {
+        motion_fn(self.editor);
+        self.editor.last_motion = Some(Motion(Box::new(motion_fn)));
+    }
 }
 
 use helix_view::{align_view, Align};
@@ -882,17 +888,19 @@ fn goto_window_bottom(cx: &mut Context) {
 
 fn move_word_impl<F>(cx: &mut Context, move_fn: F)
 where
-    F: Fn(RopeSlice, Range, usize) -> Range,
+    F: Fn(RopeSlice, Range, usize) -> Range + 'static,
 {
     let count = cx.count();
-    let (view, doc) = current!(cx.editor);
-    let text = doc.text().slice(..);
+    cx.run_motion(move |editor| {
+        let (view, doc) = current!(editor);
+        let text = doc.text().slice(..);
 
-    let selection = doc
-        .selection(view.id)
-        .clone()
-        .transform(|range| move_fn(text, range, count));
-    doc.set_selection(view.id, selection);
+        let selection = doc
+            .selection(view.id)
+            .clone()
+            .transform(|range| move_fn(text, range, count));
+        doc.set_selection(view.id, selection);
+    });
 }
 
 fn move_next_word_start(cx: &mut Context) {
@@ -928,7 +936,7 @@ where
     F: Fn(RopeSlice, Range, usize, Movement) -> Range + 'static,
 {
     let count = cx.count();
-    let motion = move |editor: &mut Editor| {
+    cx.run_motion(move |editor: &mut Editor| {
         let (view, doc) = current!(editor);
         let text = doc.text().slice(..);
         let behavior = if doc.mode == Mode::Select {
@@ -942,9 +950,7 @@ where
             .clone()
             .transform(|range| move_fn(text, range, count, behavior));
         doc.set_selection(view.id, selection);
-    };
-    motion(cx.editor);
-    cx.editor.last_motion = Some(Motion(Box::new(motion)));
+    });
 }
 
 fn goto_prev_paragraph(cx: &mut Context) {
@@ -1027,18 +1033,20 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
 
 fn extend_word_impl<F>(cx: &mut Context, extend_fn: F)
 where
-    F: Fn(RopeSlice, Range, usize) -> Range,
+    F: Fn(RopeSlice, Range, usize) -> Range + 'static,
 {
     let count = cx.count();
-    let (view, doc) = current!(cx.editor);
-    let text = doc.text().slice(..);
+    cx.run_motion(move |editor| {
+        let (view, doc) = current!(editor);
+        let text = doc.text().slice(..);
 
-    let selection = doc.selection(view.id).clone().transform(|range| {
-        let word = extend_fn(text, range, count);
-        let pos = word.cursor(text);
-        range.put_cursor(text, pos, true)
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            let word = extend_fn(text, range, count);
+            let pos = word.cursor(text);
+            range.put_cursor(text, pos, true)
+        });
+        doc.set_selection(view.id, selection);
     });
-    doc.set_selection(view.id, selection);
 }
 
 fn extend_next_word_start(cx: &mut Context) {
@@ -1069,8 +1077,6 @@ fn will_find_char<F>(cx: &mut Context, search_fn: F, inclusive: bool, extend: bo
 where
     F: Fn(RopeSlice, char, usize, usize, bool) -> Option<usize> + 'static,
 {
-    // TODO: count is reset to 1 before next key so we move it into the closure here.
-    // Would be nice to carry over.
     let count = cx.count();
 
     // need to wait for next key
@@ -1097,10 +1103,9 @@ where
             _ => return,
         };
 
-        find_char_impl(cx.editor, &search_fn, inclusive, extend, ch, count);
-        cx.editor.last_motion = Some(Motion(Box::new(move |editor: &mut Editor| {
-            find_char_impl(editor, &search_fn, inclusive, true, ch, 1);
-        })));
+        cx.run_motion(move |editor| {
+            find_char_impl(editor, &search_fn, inclusive, extend, ch, count)
+        });
     })
 }
 
@@ -1267,17 +1272,19 @@ fn replace(cx: &mut Context) {
 
 fn switch_case_impl<F>(cx: &mut Context, change_fn: F)
 where
-    F: Fn(Cow<str>) -> Tendril,
+    F: Fn(Cow<str>) -> Tendril + 'static,
 {
-    let (view, doc) = current!(cx.editor);
-    let selection = doc.selection(view.id);
-    let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
-        let text: Tendril = change_fn(range.fragment(doc.text().slice(..)));
+    cx.run_motion(move |editor| {
+        let (view, doc) = current!(editor);
+        let selection = doc.selection(view.id);
+        let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
+            let text: Tendril = change_fn(range.fragment(doc.text().slice(..)));
 
-        (range.from(), range.to(), Some(text))
+            (range.from(), range.to(), Some(text))
+        });
+
+        doc.apply(&transaction, view.id);
     });
-
-    doc.apply(&transaction, view.id);
 }
 
 fn switch_case(cx: &mut Context) {
@@ -3691,7 +3698,7 @@ fn rotate_selection_contents_backward(cx: &mut Context) {
 // tree sitter node selection
 
 fn expand_selection(cx: &mut Context) {
-    let motion = |editor: &mut Editor| {
+    cx.run_motion(|editor| {
         let (view, doc) = current!(editor);
 
         if let Some(syntax) = doc.syntax() {
@@ -3705,13 +3712,11 @@ fn expand_selection(cx: &mut Context) {
             let selection = object::expand_selection(syntax, text, current_selection.clone());
             doc.set_selection(view.id, selection);
         }
-    };
-    motion(cx.editor);
-    cx.editor.last_motion = Some(Motion(Box::new(motion)));
+    });
 }
 
 fn shrink_selection(cx: &mut Context) {
-    let motion = |editor: &mut Editor| {
+    cx.run_motion(|editor| {
         let (view, doc) = current!(editor);
         let current_selection = doc.selection(view.id);
         // try to restore previous selection
@@ -3731,16 +3736,14 @@ fn shrink_selection(cx: &mut Context) {
             let selection = object::shrink_selection(syntax, text, current_selection.clone());
             doc.set_selection(view.id, selection);
         }
-    };
-    motion(cx.editor);
-    cx.editor.last_motion = Some(Motion(Box::new(motion)));
+    });
 }
 
 fn select_sibling_impl<F>(cx: &mut Context, sibling_fn: &'static F)
 where
     F: Fn(Node) -> Option<Node>,
 {
-    let motion = |editor: &mut Editor| {
+    cx.run_motion(|editor| {
         let (view, doc) = current!(editor);
 
         if let Some(syntax) = doc.syntax() {
@@ -3750,9 +3753,7 @@ where
                 object::select_sibling(syntax, text, current_selection.clone(), sibling_fn);
             doc.set_selection(view.id, selection);
         }
-    };
-    motion(cx.editor);
-    cx.editor.last_motion = Some(Motion(Box::new(motion)));
+    });
 }
 
 fn select_next_sibling(cx: &mut Context) {
@@ -4017,7 +4018,7 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         cx.editor.autoinfo = None;
         cx.editor.pseudo_pending = None;
         if let Some(ch) = event.char() {
-            let textobject = move |editor: &mut Editor| {
+            cx.run_motion(move |editor: &mut Editor| {
                 let (view, doc) = current!(editor);
                 let text = doc.text().slice(..);
 
@@ -4055,9 +4056,7 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
                     }
                 });
                 doc.set_selection(view.id, selection);
-            };
-            textobject(cx.editor);
-            cx.editor.last_motion = Some(Motion(Box::new(textobject)));
+            });
         }
     });
 
